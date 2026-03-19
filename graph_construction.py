@@ -67,63 +67,35 @@ class GraphConstructor:
     
     def build_graph_ppmi(self, documents):
         cooc_count, word_count = self.compute_cooccurrence_statistics(documents)
-        n = self.vocab_size
-        
         total_pairs = np.sum(cooc_count)
+        denominator = np.outer(word_count, word_count)
+        adjacency = np.zeros_like(cooc_count, dtype=np.float32)
 
-        adjacency = np.zeros((n, n), dtype=np.float32)
-        
-        for i in range(n):
-            for j in range(n):
-                if cooc_count[i, j] > 0:
-                    numerator = cooc_count[i, j] * total_pairs
-                    denominator = word_count[i] * word_count[j]
-                    
-                    if denominator > 0:
-                        pmi = np.log(numerator / denominator)
-                        adjacency[i, j] = max(pmi, 0.0)
+        valid = (cooc_count > 0) & (denominator > 0)
+        if np.any(valid) and total_pairs > 0:
+            pmi = np.log((cooc_count[valid] * total_pairs) / denominator[valid])
+            adjacency[valid] = np.maximum(pmi, 0.0).astype(np.float32)
 
         np.fill_diagonal(adjacency, 0)
-        
-        num_edges = np.count_nonzero(adjacency)
-        
         return adjacency
     
     def build_graph_cosine(self, embeddings):
-        n = embeddings.shape[0]
-        adjacency = np.zeros((n, n), dtype=np.float32)
-
-        for i in range(n):
-            for j in range(n):
-                if i != j:
-                    dot_product = np.dot(embeddings[i], embeddings[j])
-                    norm_i = np.linalg.norm(embeddings[i])
-                    norm_j = np.linalg.norm(embeddings[j])
-                    
-                    if norm_i > 0 and norm_j > 0:
-                        cos_sim = dot_product / (norm_i * norm_j)
-                        adjacency[i, j] = max(cos_sim, 0.0)
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        normalized = embeddings / np.clip(norms, 1e-12, None)
+        adjacency = normalized @ normalized.T
+        adjacency = np.maximum(adjacency, 0.0).astype(np.float32)
 
         np.fill_diagonal(adjacency, 0)
-        
-        num_edges = np.count_nonzero(adjacency)
-   
         return adjacency
     
     def build_graph_euclidean(self, embeddings):   
-        n = embeddings.shape[0]
-        adjacency = np.zeros((n, n), dtype=np.float32)
-        
-        for i in range(n):
-            for j in range(n):
-                if i != j:
-                    distance = np.linalg.norm(embeddings[i] - embeddings[j])
-                    adjacency[i, j] = 1.0 / (1.0 + distance)
+        squared_norms = np.sum(embeddings ** 2, axis=1, keepdims=True)
+        distances_sq = squared_norms + squared_norms.T - 2.0 * (embeddings @ embeddings.T)
+        distances_sq = np.maximum(distances_sq, 0.0)
+        distances = np.sqrt(distances_sq)
+        adjacency = (1.0 / (1.0 + distances)).astype(np.float32)
         
         np.fill_diagonal(adjacency, 0)
-        
-        num_edges = np.count_nonzero(adjacency)
-
         return adjacency
     
     def filter_edges(self, adjacency, keep_top_k=None):

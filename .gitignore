@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+
+# Training artifacts
+checkpoints/
+checkpoints_*/
+study_results/
+study_results_*/
+*.pth
+
+# DGL local cache/config
+.dgl/
+
+# Logs and temporary files
+*.log
+*.tmp
