@@ -20,7 +20,9 @@ class GraphFusionNetwork(nn.Module):
         self.num_conv_steps = num_conv_steps
         self.embeddings = nn.Embedding(vocab_size, embedding_dim)
         self.edge_learning_params = nn.ParameterList([ nn.Parameter(torch.ones(1)) for _ in range(num_graphs)])
-        self.input_projection = nn.Linear(embedding_dim, hidden_dim)
+        self.input_projections = nn.ModuleList(
+            [nn.Linear(embedding_dim, hidden_dim) for _ in range(num_graphs)]
+        )
         self.dropout = nn.Dropout(dropout)
         self.classifiers = nn.ModuleList([nn.Linear(hidden_dim, num_classes) for _ in range(num_graphs)])
         self.fusion_heads = nn.ModuleList([
@@ -53,7 +55,7 @@ class GraphFusionNetwork(nn.Module):
             return new_features
     
     def graph_convolution(self, graph, node_features, edge_weights, graph_idx):
-        h = self.input_projection(node_features)
+        h = self.input_projections[graph_idx](node_features)
 
         adjusted_edge_weights = self.graph_learning(edge_weights, graph_idx)
 

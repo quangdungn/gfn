@@ -6,8 +6,19 @@ warnings.filterwarnings('ignore')
 
 
 class GraphConstructor:
-    def __init__(self, window_size=20):
+    def __init__(
+        self,
+        window_size=20,
+        sequential_window=1,
+        sequential_edge_weight=0.25,
+        preserve_multiplicity=True,
+        unk_token="<unk>",
+    ):
         self.window_size = window_size
+        self.sequential_window = sequential_window
+        self.sequential_edge_weight = sequential_edge_weight
+        self.preserve_multiplicity = preserve_multiplicity
+        self.unk_token = unk_token
         self.word_to_idx = {}
         self.idx_to_word = {}
         self.vocab_size = 0
@@ -18,13 +29,18 @@ class GraphConstructor:
             for word in doc:
                 word_freq[word] += 1
         
-        vocab = [word for word, freq in word_freq.items() if freq >= min_freq]
+        vocab = [self.unk_token]
+        vocab.extend(
+            word
+            for word, freq in word_freq.items()
+            if freq >= min_freq and word != self.unk_token
+        )
         
         self.word_to_idx = {word: idx for idx, word in enumerate(vocab)}
         self.idx_to_word = {idx: word for word, idx in self.word_to_idx.items()}
         self.vocab_size = len(self.word_to_idx)
         
-        print(f"Word si \: {self.vocab_size} (min_freq={min_freq})")
+        print(f"Vocabulary size: {self.vocab_size} (min_freq={min_freq})")
         
         return self.word_to_idx
     
@@ -100,7 +116,7 @@ class GraphConstructor:
     
     def filter_edges(self, adjacency, keep_top_k=None):
         if keep_top_k is None:
-            keep_top_k = min(int(0.005 * self.vocab_size), 100)
+            keep_top_k = max(1, min(int(0.005 * self.vocab_size), 100))
         
         n = adjacency.shape[0]
         filtered = np.zeros_like(adjacency)
@@ -125,7 +141,7 @@ class GraphConstructor:
         graphs = [A1, A2, A3, A4]
         
         if filter_edges:
-            keep_top_k = min(int(0.005 * self.vocab_size), 100)
+            keep_top_k = max(1, min(int(0.005 * self.vocab_size), 100))
             
             filtered_graphs = []
             for i, graph in enumerate(graphs):
@@ -138,36 +154,59 @@ class GraphConstructor:
         return graphs
     
     def build_document_subgraph(self, doc_words, corpus_adjacency, p_neighbors=None):
-        word_indices = []
-        for word in doc_words:
-            if word in self.word_to_idx:
-                idx = self.word_to_idx[word]
-                if idx not in word_indices:
-                    word_indices.append(idx)
+        unk_idx = self.word_to_idx.get(self.unk_token)
+        if self.preserve_multiplicity:
+            word_indices = [
+                self.word_to_idx.get(word, unk_idx)
+                for word in doc_words
+                if self.word_to_idx.get(word, unk_idx) is not None
+            ]
+        else:
+            seen = set()
+            word_indices = []
+            for word in doc_words:
+                idx = self.word_to_idx.get(word, unk_idx)
+                if idx is None or idx in seen:
+                    continue
+                seen.add(idx)
+                word_indices.append(idx)
         
         if len(word_indices) == 0:
             return None, None
         
         n_doc = len(word_indices)
-        subgraph_adj = np.zeros((n_doc, n_doc), dtype=np.float32)
-        
-        global_to_local = {global_idx: local_idx 
-                          for local_idx, global_idx in enumerate(word_indices)}
-        
-        for i, wi in enumerate(word_indices):
-            for j, wj in enumerate(word_indices):
-                subgraph_adj[i, j] = corpus_adjacency[wi, wj]
+        subgraph_adj = corpus_adjacency[np.ix_(word_indices, word_indices)].astype(np.float32)
+
+        global_to_local = defaultdict(list)
+        for local_idx, global_idx in enumerate(word_indices):
+            global_to_local[global_idx].append(local_idx)
+
+        if self.sequential_window > 0 and self.sequential_edge_weight > 0:
+            for i in range(n_doc):
+                max_j = min(n_doc, i + self.sequential_window + 1)
+                for j in range(i + 1, max_j):
+                    local_weight = self.sequential_edge_weight / float(j - i)
+                    subgraph_adj[i, j] = max(subgraph_adj[i, j], local_weight)
+                    subgraph_adj[j, i] = max(subgraph_adj[j, i], local_weight)
         
         if p_neighbors is not None and p_neighbors > 0:
             for i, global_idx in enumerate(word_indices):
                 neighbors = corpus_adjacency[global_idx]
                 
-                neighbor_indices = np.argsort(neighbors)[-p_neighbors:]
-                
+                positive_neighbors = np.flatnonzero(neighbors > 0)
+                if positive_neighbors.size == 0:
+                    continue
+
+                if positive_neighbors.size > p_neighbors:
+                    top_positions = np.argpartition(neighbors[positive_neighbors], -p_neighbors)[-p_neighbors:]
+                    neighbor_indices = positive_neighbors[top_positions]
+                else:
+                    neighbor_indices = positive_neighbors
+
                 for neighbor_idx in neighbor_indices:
-                    if neighbor_idx in global_to_local:
-                        j = global_to_local[neighbor_idx]
-                        subgraph_adj[i, j] = max(subgraph_adj[i, j], 
-                                                neighbors[neighbor_idx])
-        
+                    for j in global_to_local.get(neighbor_idx, []):
+                        if i == j:
+                            continue
+                        subgraph_adj[i, j] = max(subgraph_adj[i, j], neighbors[neighbor_idx])
+
         return subgraph_adj, word_indices
