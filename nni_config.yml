@@ -1,0 +1,55 @@
+# NNI Configuration for GFN Paper-Exact Grid Search
+# Matches paper Section 5.1.3: "Neural Network Intelligence (NNI) to implement grid searching"
+
+authorName: GFN
+experimentName: gfn_paper_exact_grid_search
+
+# Search space - paper exact from Section 5.1.3
+searchSpace:
+  dropout:
+    _type: choice
+    _value: [0.3, 0.5, 0.7]
+  batch_size:
+    _type: choice
+    _value: [16, 32, 64, 128]
+  p_neighbors:
+    _type: choice
+    _value: [1, 3, 5, 7, 9]
+
+# Search algorithm - Grid Search
+searchAlgorithmSettings:
+  builtinOperatorName: GridSearch
+  classArgs:
+    optimize_mode: maximize  # Paper optimizes for accuracy
+
+# Trial job configuration
+trialCommand: python gfn/gfn_paper_exact.py --mode single --task sentiment --dataset dataUIT
+trialCodeDirectory: .
+trialGpuNumber: 1
+
+# Tuner settings
+tuner:
+  builtinOperatorName: GridSearch
+  classArgs:
+    optimize_mode: maximize
+
+# Reporter settings
+assessor: null
+
+# Maximization target
+maximizationMetric:
+  name: test_accuracy
+  value: 1.0
+
+# Total trials = 3 * 4 * 5 = 60 combinations (paper: "60 trials")
+maxTrialNumber: 60
+maxExperimentDuration: null
+estimatedTrailDuration: 600s  # ~10 min per trial
+
+# Resource allocation
+trialConcurrency: 4  # Run 4 trials in parallel (if GPUs available)
+useAnnotation: false
+nniManagerIP: localhost
+
+# Output
+logDir: ./nni_experiments

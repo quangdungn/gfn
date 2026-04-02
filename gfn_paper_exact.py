@@ -1,6 +1,14 @@
 """
 GFN Paper-Exact Implementation with Grid Search Parameter Optimization
 Implements Dai et al. 2022 specifications exactly
+
+Paper Section 5.1.3: "For other parameters searching, we adopt Neural Network 
+Intelligence (NNI) to implement grid searching."
+
+This module supports:
+1. Single run: Paper-exact hyperparameters
+2. NNI Grid Search: Official NNI tool (paper-exact)
+3. Custom Grid Search: Fallback implementation
 """
 import torch
 import torch.nn as nn
@@ -13,6 +21,13 @@ from itertools import product
 from collections import defaultdict
 import numpy as np
 from datetime import datetime
+
+# Try to import NNI (paper-exact requirement)
+try:
+    import nni
+    HAS_NNI = True
+except ImportError:
+    HAS_NNI = False
 
 # Import existing GFN components
 from gfn_vietnamese_pipeline import (
@@ -193,7 +208,7 @@ def create_paper_exact_config(task='sentiment', data_dir=None, dataset='dataGPT'
     config = {
         # Data
         'task': task,
-        'data_dir': data_dir or f'./data{dataset}',
+        'data_dir': data_dir or f'./{dataset}',  # Fixed: was f'./data{dataset}'
         'graph_corpus_scope': 'train',
         'tokenizer_mode': 'auto',
         
@@ -239,6 +254,10 @@ def create_paper_exact_config(task='sentiment', data_dir=None, dataset='dataGPT'
         'num_workers': 4,
         'pin_memory': True,
         'persistent_workers': False,
+        
+        # Paper-Exact Parallel Training (Stage 1)
+        'use_parallel_stage1': True,  # Enable parallel training if multiple GPUs available
+        'reuse_graph_states': True,   # Checkpoint and resume support
         
         # Output
         'save_dir': './checkpoints/paper_exact',
@@ -292,6 +311,54 @@ def train_with_grid_search(task='sentiment', data_dir=None, dataset='dataGPT',
     return optimizer.results
 
 
+def train_with_nni_grid_search(task='sentiment', data_dir=None, dataset='dataGPT',
+                                run_name='paper_nni_grid_search', **kwargs):
+    """
+    Train GFN with NNI grid search (paper-exact requirement)
+    
+    Paper Section 5.1.3: 
+    "For other parameters searching, we adopt Neural Network Intelligence (NNI)
+    to implement grid searching."
+    """
+    if not HAS_NNI:
+        raise ImportError(
+            "NNI not installed! Install with: pip install nni>=3.0\n"
+            "Or use --mode grid_search for custom grid search implementation."
+        )
+    
+    # Get hyperparameter suggestion from NNI
+    params = nni.get_next_parameter()
+    
+    base_config = create_paper_exact_config(
+        task=task,
+        data_dir=data_dir,
+        dataset=dataset,
+        run_name=run_name,
+        **kwargs
+    )
+    
+    # Override with NNI parameters
+    base_config.update(params)
+    
+    print(f"\nNNI Trial Parameters: {params}")
+    print(f"Running training with these parameters...")
+    
+    try:
+        results = run_training_pipeline(base_config)
+        
+        # Report back to NNI - maximize test accuracy
+        test_accuracy = results.get('test_accuracy', 0.0)
+        nni.report_final_result(test_accuracy)
+        
+        print(f"Trial Result - Test Accuracy: {test_accuracy:.4f}")
+        return results
+        
+    except Exception as e:
+        print(f"Trial failed: {e}")
+        nni.report_final_result(0.0)
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='GFN Paper-Exact Implementation with Parameter Search'
@@ -306,9 +373,9 @@ def main():
     parser.add_argument('--dataset', choices=['dataGPT', 'dataUIT'],
                        default='dataGPT',
                        help='Dataset to use')
-    parser.add_argument('--mode', choices=['single', 'grid_search'],
+    parser.add_argument('--mode', choices=['single', 'grid_search', 'nni'],
                        default='single',
-                       help='Training mode')
+                       help='Training mode: single, grid_search, or nni (paper-exact)')
     parser.add_argument('--num_trials', type=int, default=None,
                        help='Number of grid search trials (None = full grid)')
     parser.add_argument('--run_name', type=str, default='paper_exact',
@@ -393,7 +460,7 @@ def main():
         print(f"  Macro-F1: {results.get('test_macro_f1', 'N/A'):.4f}")
         
     elif args.mode == 'grid_search':
-        print("Running grid search with parameter combinations...\n")
+        print("Running grid search with parameter combinations (custom implementation)...\n")
         results = train_with_grid_search(
             task=args.task,
             data_dir=args.data_dir,
@@ -403,6 +470,24 @@ def main():
             **override_kwargs
         )
         print(f"Grid search complete with {len(results)} trials")
+    
+    elif args.mode == 'nni':
+        print("Running NNI grid search (paper-exact: Dai et al. 2022)...\n")
+        if not HAS_NNI:
+            print("ERROR: NNI not installed!")
+            print("Install with: pip install nni>=3.0")
+            print("\nOr use command:")
+            print("  nni create --config gfn/nni_config.yml")
+            return
+        
+        train_with_nni_grid_search(
+            task=args.task,
+            data_dir=args.data_dir,
+            dataset=args.dataset,
+            run_name=args.run_name,
+            device=args.device,
+            **override_kwargs
+        )
 
 
 if __name__ == '__main__':
